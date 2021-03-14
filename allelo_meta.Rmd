@@ -1,0 +1,1013 @@
+---
+title: "alle_meta"
+author: "Zhijie Zhang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+This is the code for the paper 'Effects of allelopathy on plant performance: a meta-analysis', which which was accepted in *Ecology Letters* in 2020. Please contact Zhijie Zhang (zhijie.zhang@uni-konstanz.de) if any question.
+
+
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 16px;
+      font-family: "Times New Roman"
+  }
+td {  /* Table  */
+  font-size: 14px;
+}
+h1.title {
+  font-size: 34px;
+  color: Black;
+  font-family: "Arial";
+}
+h1 { /* Header 1 */
+  font-size: 26px;
+  color: DarkBlue;
+  font-family: "Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+    font-family: "Arial";
+    color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 18px;
+  font-family: "Arial";
+  color: DarkBlue;
+}
+
+h4 { /* Header 4 */
+  font-size: 16px;
+  font-family: "Arial";
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+
+
+
+
+**Variables**:\
+
+**eff_size:** lnRR\
+**var:**      sampling error variance\
+**se:**       sampling error\
+**m_ck, se_ck, sd_ck, n_ck:** mean, se, sd and replication of control treatment\
+**m_t,  se_t,  sd_t,  n_t:**  mean, se, sd and replication of allelopathy treatment\
+
+**Fixed effects:**
+
+1. **study design:**
+  + **method:** seven methods that were used to test allelopathy (leachate, residue, exudate, volatile, soil, AC [activated carbon], solvent)
+  + **trait:**  germination vs growth
+  + **door:**   controlled, semi-natural vs natural environment
+  + **duration**
+  + **dose:**   concentration of leachate/residue
+  + **color:**  fresh biomass vs litter
+  + **plantpart:** above-, below- vs total biomass
+2. **biological traits:**
+  + **lifespan:**  short-lived (annual, biennial) vs long-lived (perennial)
+  + **lifeform:**  herb vs tree
+  + **crop:**      crop vs wild
+3. **evolutionary history:**
+  + **pd:**            phylogenetic distance
+  + **origin_3level:** native, non-naturalized alien vs naturalized alien
+  + **origin:**        native vs alien
+
+**xx_allelo** and **xx_test** indicate the infomation of allelopathy and test plants, respecitively.\
+**xx_dummy** is dichotomous version of categorical variables with two levels.\
+**xx_scale** is the variable after mean/median-centering.\
+
+**Random effects:**\
+**Ref_ID**: Identity of paper.\
+**xx_spp**  : Identitiy of species [phylogenetic part].\
+**xx_spp_nonphylo** : Identitiy of species [NON-phylogenetic part]
+
+```{r setup, message = F,warning = F}
+library(knitr)
+library(tidyverse)
+library(brms)
+library(ape)
+library(coda)
+library(modelr)
+library(gridExtra)
+library(pBrackets)
+library(RColorBrewer)
+library(performance)
+library(phytools)
+library(kableExtra)
+library(tidybayes)
+library(formattable)
+library(grid)
+library(Taxonstand)
+knitr::opts_chunk$set(message = F,warning = F)
+```
+
+```{r}
+load('brms.RData') # I saved the output so that I don't have to re-run the analyses.
+```
+
+
+
+functions
+```{r}
+Ftable <- function(model, reorder = F, order, percent = F){
+  table <- summary(model)$fixed
+  table2 <-summary(model, prob = 0.9)$fixed %>% as_tibble()
+  names <- rownames(table)
+  table <- table %>% 
+    as_tibble() %>% 
+    rename('L95%CL' = `l-95% CI`, 'U95%CL' = `u-95% CI`) %>% 
+    select(-Rhat, -Bulk_ESS, -Tail_ESS)
+  table$`L90%CL` <- table2$`l-90% CI`
+  table$`U90%CL` <- table2$`u-90% CI`
+  
+  if (percent == T){
+    table <- table %>% 
+      mutate(percent = exp(as.numeric(Estimate)) - 1)
+  }
+  
+  table <-table %>% 
+    mutate(Estimate = ifelse(`L95%CL`	* `U95%CL` > 0, 
+                             paste(sprintf('%.3f', round(Estimate, 3)),  '*', sep = ''), 
+                             ifelse(`L90%CL`	* `U90%CL` > 0, 
+                                    paste(sprintf('%.3f', round(Estimate, 3)), '\206', sep = ''), round(Estimate, 3))),
+           rowname = names) %>% 
+    mutate(rowname = str_remove_all(rowname, 'clean|_scale|3level|method'),
+           rowname = str_replace(rowname, 'pd', 'phylogenetic distance'),
+           rowname = str_replace(rowname, 'trait', 'measurement'),
+           rowname = str_replace(rowname, 'crop', 'domestication'),
+           rowname = str_replace(rowname, 'life', 'life '),
+           rowname = str_replace(rowname, 'IdurationE2', 'duration^2'),
+           rowname = str_replace(rowname, 'IdoseE2', 'dose^2'),
+           rowname = str_replace(rowname, 'xp_envi', 'xperimental_environemt-'),
+           rowname = str_replace(rowname, 'SemiMnatural', 'Seminatural'),
+           rowname = str_replace(rowname, 'allelo_origin_non_naturalized', 'O-NN (allelo)'),
+           rowname = str_replace(rowname, 'allelo_origin_naturalized',     'O-N (allelo)'),
+           rowname = str_replace(rowname, 'test_origin_naturalized',     'O-N (test)'),
+           rowname = str_replace(rowname, 'nonMnaturalized|nonMnaturalized', 'non-naturalized'), #some encoding problems
+           rowname = str_replace(rowname, 'test_origin_non-naturalized', 'O-NN (test)'),#some encoding problems
+           rowname = str_replace(rowname, 'test_origin_nonMnaturalized', 'O-NN (test)'),#some encoding problems
+           rowname = str_replace(rowname, 'test_origin_non_naturalized', 'O-NN (test)'),#some encoding problems
+           rowname = str_replace(rowname, 'allelo_originalien', 'origin_allelo '),
+           rowname = str_replace(rowname, 'test_originalien', 'origin_test '),
+           rowname = str_replace(rowname, '_test', ' (test) '),
+           rowname = str_replace(rowname, '_allelo', ' (allelo)'),
+           rowname = gsub('(^)([[:alpha:]])', '\\1\\U\\2', rowname, perl = T) # capitalize
+           ) %>% 
+    rename('SE    ' = Est.Error)  %>% 
+    column_to_rownames(var = 'rowname') 
+
+  if (reorder == T){
+    table <- table[order,]
+  }
+  
+  table <- table %>% 
+    kable(digits = 3, escape = F, table.attr = "style = \"color: black;\"") %>% 
+    kable_styling(position = "left")
+  return(table)
+}
+
+
+
+
+desat <- function(cols, sat=0.5) {
+    X <- diag(c(1, sat, 1)) %*% rgb2hsv(col2rgb(cols))
+    hsv(X[1,], X[2,], X[3,])
+}
+
+# curly brace
+bracketsGrob <- function(...){
+  l <- list(...)
+  e <- new.env()
+  e$l <- l
+    grid:::recordGrob(  {
+      do.call(grid.brackets, l)
+    }, e)
+}
+
+obs_paper_num <- function(data, list,model_result){
+  n           <- length(list)
+  table.obs   <- c()
+  table.paper <- c()
+  for (i in 1:n){
+    # obs
+    table.obs.i   <- table(data[list[i]])
+    table.obs     <- c(table.obs,table.obs.i)
+    # papers
+    table.paper.i <- table(unique(data[c(list[i],'Ref_ID')])[list[i]])
+    table.paper   <- c(table.paper, table.paper.i)
+  }
+  model_result <- model_result %>% 
+    mutate_if(is.numeric, function(x) sprintf(x, fmt = '%#.2f')) %>% 
+    mutate(obs     = table.obs,
+           paper    = table.paper,
+           CI.Upper = ifelse(CI.Upper > 0, paste('  ', CI.Upper, sep = ''), CI.Upper),
+           info_sum = paste(Estimate, ' [', CI.Lower, ', ', CI.Upper,']   ', obs,' (',paper,')', sep = ''))
+return(model_result)
+}
+
+```
+
+# data
+```{r prep}
+dir.create('fig',showWarnings = F)
+dir.create('table',showWarnings = F)
+```
+
+```{r}
+dat <- read.csv('00dat.csv')
+tree <- read.tree('Allelopathy.tre')
+```
+
+```{r}
+# some rounding problems after exporting the data file. Here I fix it.
+at <- (dat %>% names)[str_detect(dat %>% names, 'scale')]
+dat <- dat %>% 
+  mutate_at(at, function(x) round(x, digits = 5))
+rm(at)
+```
+
+```{r}
+tree <- makeNodeLabel(tree)
+allelo_tree <- keep.tip(tree, unique(as.character(dat$allelo_spp))) %>% vcv.phylo
+test_tree   <- keep.tip(tree, unique(as.character(dat$test_spp))) %>% vcv.phylo
+```
+
+
+# across seven methods
+## meta-analysis
+```{r, eval = F}
+m_intercept <- brm(data = dat,
+                   eff_size | se(se, sigma = TRUE) ~ 1  +  # allow both sampling error and residuals
+                     (1 | Ref_ID) + (1|allelo_spp) +  (1|test_spp) + (1|allelo_spp_nophylo) +  (1|test_spp_nophylo) ,
+                   cov_ranef = list(allelo_spp = allelo_tree, test_spp = test_tree), # phylo
+                   control = list(adapt_delta = 0.9999, max_treedepth = 15),
+                   iter = 3000, cores = 4)
+```
+
+### result
+```{r}
+m_intercept %>% Ftable(percent = T)
+```
+
+
+### heterogeneity
+```{r}
+var_m <- sum(1/dat$var)*(nrow(dat)-1)/((sum(1/dat$var))^2-sum((1/dat$var)^2))
+var_samp <- m_intercept %>% 
+  posterior_samples() %>% 
+  select(starts_with('sd'), sigma) %>% 
+  transmute_all(.funs = list(sq = ~(. ^ 2))) %>% # sd to variance
+  mutate(sampling = var_m) %>%  # sampling variance
+  mutate(total_var = rowSums(.),
+         no_sample = total_var - sampling)
+colnames(var_samp) <- colnames(var_samp) %>% 
+  str_remove_all('__Intercept|_sq|sd_')
+```
+
+
+```{r}
+# I^2 and lambda
+I_square <- hypothesis(var_samp, c('Ref_ID/total_var             = 0',
+                                   'allelo_spp_nophylo/total_var = 0',
+                                   'test_spp_nophylo/total_var   = 0',
+                                   'sigma/total_var              = 0',
+                                   #'no_sample/total_var         = 0',
+                                   'allelo_spp/no_sample = 0',
+                                   'test_spp/no_sample   = 0'))$hypothesis %>% 
+  as_tibble() %>% 
+  select(-Evid.Ratio, -Post.Prob, -Star)
+
+I_square[,1] <- c('Study', 'Species (allelo)', 'Species (test)', 'Observation', #'Total heterogeneity', 
+                  'Phylogenetic signal (allelo)', 'Phylogenetic signal (test)')
+colnames(I_square) <- c('', 'Estimate', 'SE', 'L95%CL', 'U95%CL')
+I_square <- I_square %>% 
+  kable(digits = 4, escape = F, table.attr = "style = \"color: black;\"") %>% 
+  kable_styling()
+I_square
+```
+
+
+### publication bias
+
+```{r}
+fitted <- fitted(m_intercept, dat)
+dat$meta_resid <- dat$eff_size  - fitted[,1]
+dat <- dat %>% 
+  mutate(p_i = 1/se,
+         o_i = meta_resid * p_i)
+rm(fitted)
+```
+
+egger's regression
+```{r, eval =F}
+m_egg <- brm(data = dat, o_i ~ p_i, control = list(adapt_delta = 0.999), cores = 4)
+```
+```{r}
+m_egg %>% Ftable
+```
+
+effect size ~ year
+```{r, eval =F}
+m_year <- update(m_intercept, .~. + year, newdata = dat, cores = 4)
+```
+```{r}
+m_year %>% Ftable
+```
+
+
+## meta-regression (mixed-effect)
+```{r, eval = F}
+m_total <- brm(data = dat,
+               eff_size | se(se, sigma = TRUE) ~ 1  +  # allow both sampling error and residuals
+                 method + trait_scale + door_scale + # design part 1
+                 # ------------------biological traits -------------#
+                 lifespan_allelo_scale + lifeform_allelo_scale + crop_allelo_scale +
+                 lifespan_test_scale + lifeform_test_scale + crop_test_scale + 
+                 #------------------------------------------#
+                 duration_scale + I(duration_scale^2) + # design part 2
+                 #------------------ evolutionary history-----------------#
+                 pd_scale + allelo_origin_3level * test_origin_3level +       
+                 
+                 #------------- random effects-----------#
+                 (1 | Ref_ID) + (1|allelo_spp) +  (1|test_spp) + (1|allelo_spp_nophylo) +  (1|test_spp_nophylo) ,
+               cov_ranef = list(allelo_spp = allelo_tree, test_spp = test_tree),
+               control = list(adapt_delta = 0.9999, max_treedepth = 15), 
+               iter = 3000, cores = 4)
+```
+
+```{r, eval = F}
+# if classify all economic use species as crop.
+m_total_eco_use <- update(m_total, .~. - crop_allelo_scale - crop_test_scale + 
+                            eco_use_allelo_scale + eco_use_test_scale )
+```
+
+```{r}
+m_total %>% Ftable(percent = T, reorder = T, order = c(1:10, 17:18, 11:16, 19:24, 26, 25, 27))
+```
+
+```{r}
+m_total_eco_use %>% Ftable(percent = T, reorder = T, order = c(1:10, 17:18, 11:16, 19:24, 26, 25, 27))
+```
+
+r2
+```{r}
+r2_bayes(m_total)
+```
+
+
+convergence and autocorrelation
+```{r, eval = F}
+stanplot(m_total, type = "hist")
+gelman.diag(as.mcmc(m_total)[,1:26])
+autocorr.diag(as.mcmc(m_total)[,1:26],  lags = c(0, 1,2,3,4, 5, 10, 50))
+```
+
+
+# each method
+data prepration
+```{r}
+dat_leach <- dat %>%
+  filter(method =="leachate",
+         unit_type   == "v" ,
+         !Ref_ID %in% c('L179', 'z29', 'Z33', 'z44', 'z54', 'L065', 
+                        'L125', 'L137', 'L144', 'L140', 'L151', 'L156',
+                        'z38', 'z136', '60', 'L002','L053', 'l105', 'L114',
+                        'L161'), # dose not clear, first extract, then dry, and disolve again
+         !(Ref_ID == 'L036' & dose < 0.002), # ppm as unit
+         !is.na(dose), !is.na(plantpart), !is.na(color)) %>% # lose c. 600 data points
+  droplevels()
+
+dat_residue <- dat %>% 
+  filter(method == "residue", 
+         !is.na(dose), !is.na(plantpart), !is.na(color),!is.na(unit_type)) %>%
+  droplevels()
+dat_residue$unit_type <- relevel(dat_residue$unit_type, 'w')
+
+dat_soil <- dat %>% 
+  filter(method == "soil") %>% 
+  droplevels()
+
+dat_AC <- dat%>%
+  filter(method == "AC") %>%  
+  droplevels()
+
+dat_VOC <- dat%>%
+  filter(method == "volatile") %>%
+  droplevels()
+
+dat_exudate <- dat %>%
+  filter(method == "exudate") %>%
+  droplevels()
+
+dat_organic <- dat %>%
+  filter(method == "solvent") %>%
+  filter(note_solvent =='', !is.na(plantpart), !is.na(dose)) %>% 
+  droplevels()
+```
+
+
+
+```{r, eval = F}
+m_leach   <- update(m_total, .~. - method - exp_envi - allelo_origin_3level * test_origin_3level + 
+                      plantpart + dose_scale + I(dose_scale^2) + color_scale + allelo_origin_3level * test_origin_3level,
+                    newdata = dat_leach, cores = 4, chains = 4)
+
+
+m_residue <- update(m_leach, .~. - allelo_origin_3level * test_origin_3level + 
+                      exp_envi + unit_type + allelo_origin*test_origin,
+                    newdata = dat_residue, cores = 4, chains = 4)
+
+
+m_soil     <- update(m_residue, .~. - plantpart - dose_scale - I(dose_scale^2) - 
+                       color_scale - unit_type - exp_envi - lifeform_test_scale, # very few woody species as test
+                     newdata = dat_soil, cores = 4, chains = 4)
+
+m_AC       <- update(m_residue, newdata = dat_AC,   cores = 4, chains = 4, .~. - plantpart - 
+                       dose_scale - I(dose_scale^2) - color_scale - unit_type)
+m_VOC      <- update(m_AC  , newdata = dat_VOC,     cores = 4, chains = 4, .~. - exp_envi)
+m_exudate  <- update(m_VOC , newdata = dat_exudate, cores = 4, chains = 4)
+m_organic  <- update(m_VOC , newdata = dat_organic, cores = 4, chains = 4,
+                     .~. - lifespan_test_scale - lifeform_allelo_scale - lifeform_test_scale- 
+                       allelo_origin*test_origin + 
+                       solvent_clean + dose_scale + I(dose_scale^2) + allelo_origin*test_origin)
+```
+
+## leachate
+```{r}
+m_leach %>% Ftable(percent = T)
+```
+
+
+## residue
+```{r}
+m_residue %>% Ftable(percent = T)
+```
+
+## soil
+```{r}
+m_soil %>% Ftable
+```
+
+## AC
+```{r}
+m_AC %>% Ftable
+```
+
+## volatile
+```{r}
+m_VOC %>% Ftable
+```
+
+## exudate
+```{r}
+m_exudate %>% Ftable
+```
+
+## organic extraction
+```{r}
+m_organic %>% Ftable
+```
+
+
+# figures
+```{r}
+theme <-  theme(panel.background = element_blank(),
+                panel.border = element_rect(fill = NA), 
+                strip.background = element_blank(),
+                axis.text.x = element_text(size = 8, colour = 'black'),
+                axis.text.y = element_text(size = 8, colour = 'black'),
+                #text        = element_text(size = 8),
+                axis.title.y = element_text(size = 10),# size of y lab
+                axis.title.x = element_text(size = 10),# size of X lab
+                legend.position     = c(0.1,0.8),
+                legend.title        = element_text(size = 9),
+                legend.text         = element_text(size = 8),
+                legend.key.height   = unit(0.8,'line'),
+                legend.background   = element_blank(),
+                legend.key          = element_rect(colour = NA, fill = NA),
+                plot.title  = element_text(hjust = 0.5),
+                plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 0.5, unit = "cm"))
+```
+
+
+
+
+## description
+
+```{r}
+paper_year <- dat %>% 
+  select(Ref_ID, year) %>% 
+  distinct() %>% 
+  filter(year > 1980) %>% 
+  group_by(year) %>%
+  tally
+paper_year <- data.frame(year = 1992:2017) %>% 
+  left_join(paper_year)
+
+
+# reference, all ecology papers according to WOS
+paper_year$all_ecology <- c('2069',  '2104',  '2375', '2675',
+                            '2778',  '2895',  '3219',  '3289',
+                            '3451',  '3713' , '3843',  '4249',  
+                            '4576',  '5022',  '5647',  '6407',
+                            '7085',  '7746',  '8558',  '9242',
+                            '9892',  '10328', '10718', '11914', 
+                            '12482', '13072') %>% as.numeric()
+paper_year$n_ecology <- paper_year$all_ecology/median(paper_year$all_ecology) * median(na.omit(paper_year$n))
+
+```
+
+paper ~ year plot
+```{r paper~year}
+paper_year %>% ggplot() + 
+  geom_vline(xintercept = 2009, color = desat('dodgerblue', 0.6), size = 0.5) +
+  geom_vline(xintercept = 2000, color = desat('red', 0.5),        size = 0.5) + 
+  aes(x = year, y = n) + 
+  geom_smooth(se = F, colour = 'black', method = 'loess', size = 0.5) + 
+  geom_point(size = 0.6) + 
+  labs(y = 'Number of published papers\n', x = '\nYear') + theme +
+  scale_x_continuous(limits = c(1992, 2017), breaks = 1990 + 1:5 *5, labels = 1990 + 1:5 *5) +
+  #-----reference ---------#
+  geom_point(aes(x = year, y = n_ecology), color = 'gray', size = 0.6) +
+  geom_smooth(aes(x = year, y = n_ecology),se = F, colour = 'gray', method = 'loess', size = 0.5) + 
+  # ----- add text and arrows----#
+  geom_segment(aes(x = 1998, y = 12, xend = 1999.8, yend = 10),
+               arrow = arrow(length = unit(0.13, 'cm'), type='closed'),
+               color = desat('red', 0.5), size = 0.4) + 
+  
+  geom_segment(aes(x = 2011, y = 20, xend = 2009.2, yend = 22),
+               arrow = arrow(length = unit(0.13, 'cm'), type='closed'),
+               color = desat('dodgerblue', 0.6), size = 0.4) + 
+  
+  annotate(geom="text", x= 1997.9, y= 12.2, label='Callaway & Aschehoug 2000', size = 2, hjust = 1) +
+  annotate(geom="text", x= 2011.1, y= 19.9, label='A wave of retractions', size = 2, hjust = 0) +
+  theme(axis.text.x = element_text(vjust = -1)) +
+  # ------------legend -----------------#
+  geom_segment(aes(x = 1992, y = 32, xend = 1993, yend = 32), size = 0.3) +
+  annotate(geom="text", x = 1993.5, y = 32, label = 'Allelopathy', size = 2, hjust = 0) +
+  geom_segment(aes(x = 1992, y = 30, xend = 1993, yend = 30), size = 0.3, color = 'gray') +
+  annotate(geom="text", x = 1993.5, y = 30, label = 'Ecology',     size = 2, hjust = 0) +
+  # second y axis
+  scale_y_continuous(name = "Number of allelopathy studies\n", 
+                     sec.axis = sec_axis( trans=~./0.002813086, name="Number of ecology studies\n") )
+
+```
+
+
+```{r}
+ggsave('./fig/number.pdf', height = 9/2.54, width = 14/2.54,
+       useDingbats=FALSE)
+```
+
+
+boxplot (supplementary)
+```{r}
+t_method <- dat %>% 
+  group_by(Ref_ID, method) %>%
+  summarise(mean_duration = mean(duration)) %>% 
+  mutate(method = str_to_title(method)) %>% 
+  mutate(method = ifelse(method == 'Ac', 'AC', as.character(method)))
+t_method$method <- factor(t_method$method, 
+                         levels = c("Leachate", "Residue", "Exudate", 'Volatile', 'Soil', 'AC', 'Solvent'))
+t_method %>% ggplot() +
+  aes(x = method, y = mean_duration, fill = method) + 
+  geom_boxplot(varwidth = T, alpha = 0.7) + theme + scale_y_log10()+  theme(legend.position = "none") + labs(y = 'Duration (days)', x = '\nMethod')
+
+```
+```{r}
+ggsave('./fig/method.pdf', height = 10/2.54, width = 14/2.54,
+       useDingbats=FALSE)
+```
+
+
+
+
+tree
+```{r}
+pdf('./fig/phylo_tree.pdf', height = 15/2.54, width =  15/2.54)
+plotTree(tree, type="fan",fsize=0.1,lwd=0.5, family = 2)
+add.scale.bar(length = 50,cex = 0.7, font = 1, col = "black")
+text(-276, -427,'Million years', cex = 0.7)
+dev.off()
+
+```
+
+
+## design
+```{r}
+vars <- get_variables(m_total)[grepl('b_',get_variables(m_total))] %>% str_remove('^b_')
+# design
+hypo_design <- hypothesis(m_total, c('Intercept = 0',
+                                     paste(vars[1], ' + ', vars[grepl('method', vars)], '= 0'),
+                                     paste(vars[1], ' + ', unique(dat$trait_scale) %>% sort, '* trait_scale  = 0'), 
+                                     'Intercept = 0', # controlled experiments
+                                     paste(vars[1], ' + ', vars[grepl('exp_envi', vars)],    ' = 0')
+))
+
+```
+
+```{r}
+table_design <- obs_paper_num(dat, c('method', 'trait_dummy', 'exp_envi'),
+                              hypo_design$hypothesis)
+```
+
+
+```{r}
+# biological trait
+vars_bio <- vars[grepl('life|crop', vars)]
+hypo_list <- c()
+for (i in 1:length(vars_bio)){
+  hypo_i <- paste(vars[1], ' + ', unique(dat[,vars_bio[i]]) %>% sort, ' * ', vars_bio[i], ' = 0')
+  hypo_list <- c(hypo_list, hypo_i)
+}
+
+hypo_trait <- hypothesis(m_total, hypo_list)
+
+## origin
+vars_origin <- vars[grepl('origin_', vars)]
+# Here, I can the order, make it as: 
+#                             native      on native, native on naturalized, native on nonnaturalized
+#                             naturalized on native, xxx
+#                             casual      on native, xxx
+vars_origin <- vars_origin[c(3, 4,
+                             1, 5, 7,
+                             2, 6, 8
+                             )]
+hypo_list <- c(paste(vars[1], ' = 0'))
+for (i in 1:length(vars_origin)){
+  hypo_i <- paste(vars[1], ' + ',  vars_origin[i], ' = 0')
+  hypo_list <- c(hypo_list, hypo_i)
+}
+
+
+
+#     
+hypo_origin <- hypothesis(m_leach, hypo_list)
+```
+
+
+```{r}
+cols <- c(c( '#00BA38', '#619CFF' ,'#F8766D'))
+cols <- brewer.pal(3, 'Set2')[c(1, 3, 2)]
+p0 <- (hypo_design$samples) %>% 
+  rownames_to_column('c') %>% 
+  pivot_longer(-c, names_to = "hypo", values_to = "value") %>%
+  mutate(loc = str_remove(hypo, 'H'),
+         loc = 13 - as.numeric(loc),
+         #--------------colors---------------#
+         group = ifelse(loc %in% 12:6, 'method',
+                        ifelse(loc %in% 4:5, 'measurement','door')),
+         #------ locations ----------------#
+         loc = ifelse(loc %in% 12:6, loc + 2, 
+                      ifelse(loc %in% 4:6, loc + 1, loc))) %>% 
+  ggplot() + aes(x = value, y = loc,  fill = group) + 
+  scale_fill_manual(values = cols) +
+  labs(x = expression('Effect size (ln'~italic('RR')~')'), y = '') + 
+  scale_y_continuous(breaks = c(1:3, 5:6, 8:14), labels = c( 'Natural', 'Semi-natural', 'Controlled',
+                                                            'Germination', 'Growth',
+                                                            'Solvent','Activated carbon','Soil', 'Volatile',
+                                                            'Exudate',  'Residue', 'Leachate')) +
+  #-----------plot---------#
+  stat_halfeyeh(.width = 0.95, size = 1) +
+  geom_vline(xintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) + 
+  theme + theme(legend.position = "none") +
+  theme(plot.margin = margin(t = 0.5, r = 6, b = 0.5, l = 0.5, unit = "cm")) +
+  geom_text(size = 2.3, data = table_design, hjust = 0,
+            aes(x = 0.6, y = c(14:8, 6:5, 3:1) + 0.2, label = paste('      ', info_sum), fill = NA)) + 
+  
+  coord_cartesian(clip = "off") +
+  annotate(geom="text", x= 0.38, y= 15.2, label="                   mean    95%CI       # obs (paper)", hjust = 0, size = 2.5) +
+  #------- add significance levels -------#
+  bracketsGrob(0.22, 13.3/15, 0.22, 12.3/15, h= -0.01, lwd=1, col="black", type = 4, ticks = NA) %>% annotation_custom +
+  bracketsGrob(0.72, 13.3/15, 0.72,  9.3/15, h=  0.01, lwd=1, col="black", type = 4, ticks = NA) %>% annotation_custom +
+  bracketsGrob(0.22, 5.6/15,  0.22,  4.6/15, h= -0.01, lwd=1, col="black", type = 4, ticks = NA) %>% annotation_custom +
+  bracketsGrob(0.22, 2.8/15,  0.22,  1.8/15, h= -0.01, lwd=1, col="black", type = 4, ticks = NA) %>% annotation_custom +
+  annotate(geom="text", x= -.95, y= 13.5, label="*", size = 5) + 
+  annotate(geom="text", x= .19,  y= 12, label="*", size = 5) +
+  annotate(geom="text", x= -.95, y= 5.5, label="*", size = 5) +
+  annotate(geom="text", x= -.95, y= 2.5, label="*", size = 5) 
+
+p0
+```
+
+
+```{r}
+# duration
+median <- median(log(dat$duration))
+p1 <- dat %>% 
+  data_grid(duration_scale = seq_range(duration_scale, 100),
+            method = 'leachate', trait_scale = 0, 
+            lifespan_allelo_scale = 0, lifeform_allelo_scale = 0, crop_allelo_scale =0,
+            lifespan_test_scale = 0, lifeform_test_scale = 0, crop_test_scale =0,
+            exp_envi = 'Controlled',
+            pd_scale = 0, allelo_origin_3level = 'native', test_origin_3level = 'native', se = median(se)
+  ) %>% 
+  add_fitted_draws(m_total, re_formula = NA) %>% 
+  median_hdci(.width = 0.95) %>% 
+  ggplot(aes(x = duration_scale, y = .value)) + 
+  geom_point(data = dat, aes(x = duration_scale, y = eff_size), pch = 21, color = rgb(0.85,0.85,0.85, 0.7), size = 0.7) +
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), fill = rgb(0.5, 0.5, 0.5, 0.7)) + geom_line() +
+  labs(x = '\nStudy duration [days]', y = expression('Effect size (ln'~italic('RR')~')')) +
+  theme + scale_x_continuous(breaks = log(10^(0:3)) - median , label = 10^(0:3))
+p1
+
+# dose
+median <- median(log(dat$dose) %>% na.omit())
+p2 <- dat_leach %>% 
+  data_grid(duration_scale = 0, trait_scale = 0, door_scale = 0, plantpart = 'ab', color_scale = 0,
+            lifespan_allelo_scale = 0, lifeform_allelo_scale = 0, crop_allelo_scale =0,
+            lifespan_test_scale = 0, lifeform_test_scale = 0, crop_test_scale =0,
+            pd_scale = 0,  allelo_origin_3level = 'native', test_origin_3level = 'native', se = median(se),
+            dose_scale = seq_range(dose_scale,100)
+  ) %>% 
+  add_fitted_draws(m_leach, re_formula = NA) %>% 
+  median_hdci(.width = 0.95) %>% 
+  ggplot(aes(x = dose_scale, y = .value)) + 
+  geom_point(data = dat_leach, aes(x = dose_scale, y = eff_size), pch = 21, color = rgb(0.85,0.85, 0.85, 0.7), size = 0.7) + 
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), fill = rgb(0.5, 0.5, 0.5, 0.7)) + geom_line() +
+  labs(x = '\nConcentration of leachate [g/ml]', y = expression('Effect size (ln'~italic('RR')~')')) +
+  theme + scale_x_continuous(breaks = log(10^c(-4, -3, -2, -1, 0)) - median , 
+                             label = c('0.0001', '0.001', '0.01', '0.1', '1'))
+
+p2
+```
+
+
+```{r}
+p2_residue <- dat_residue %>% 
+  data_grid(duration_scale = 0, trait_scale = 0,  plantpart = 'ab', color_scale = 0,
+            lifespan_allelo_scale = 0, lifeform_allelo_scale = 0, crop_allelo_scale =0,
+            lifespan_test_scale = 0, lifeform_test_scale = 0, crop_test_scale =0,
+             unit_type = 'w', 
+            pd_scale = 0,  
+            exp_envi = 'Controlled',
+            test_origin = 'native', allelo_origin = 'native', se = median(se),
+            dose_scale = seq_range(dose_scale,100)
+  ) %>% 
+  add_fitted_draws(m_residue, re_formula = NA) %>% 
+  median_hdci(.width = 0.95) %>% 
+  ggplot(aes(x = dose_scale, y = .value)) + 
+  geom_point(data = dat_leach, aes(x = dose_scale, y = eff_size), pch = 21, color = rgb(0.85, 0.85, 0.85, 0.7), size = 0.7) + 
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), fill = rgb(0.5, 0.5, 0.5, 0.7)) + geom_line() +
+  labs(x = '\nConcentration of residues [g/cm^3]', y = expression('Effect size (ln'~italic('RR')~')')) +
+  theme + scale_x_continuous(breaks = log(10^c(-4, -3, -2, -1, 0)) - median , 
+                             label = c('0.0001', '0.001', '0.01', '0.1', '1'))
+p2_residue
+```
+
+```{r}
+ggsave('./fig/design.pdf', height = 17/2.54, width = 17/2.54,
+       grid.arrange(p0 + labs(tag = 'a'), p1 + labs(tag = 'b'), p2 + labs(tag = 'c'), 
+                    layout_matrix = matrix(c(1, 1, 2, 3), ncol = 2, byrow = T )),
+       useDingbats=FALSE)
+
+ggsave('./fig/residue.pdf', height = 14/2.54/2, width = 17/2.54/2,
+       p2_residue,
+       useDingbats=FALSE)
+```
+
+
+## biological traits
+```{r}
+
+table_trait <- obs_paper_num(dat,list =
+                               c('lifespan_allelo','lifeform_allelo','crop_allelo',  
+                                 'lifespan_test','lifeform_test','crop_test'),
+                             hypo_trait$hypothesis)
+
+new_loc <- data.frame(loc     = 1:12,
+                      new_loc = c(1,2, 4,5, 7,8, 
+                                  11,12, 14, 15, 17, 18),
+                      labels = rep(c('crop', 'wild', 'wood', 'herb', 'long-lived', 'short-lived'), 2)
+)
+```
+
+```{r}
+
+cols = c(brewer.pal(12,'Paired')[c(9,3)], brewer.pal(12, 'PiYG')[9])
+cols <- desat(cols, sat = 1.2)
+p4 <- (hypo_trait$samples) %>% 
+  rownames_to_column('c') %>% 
+  pivot_longer(-c, names_to = "hypo", values_to = "value") %>%
+  mutate(loc = str_remove(hypo, 'H'),
+         loc = 13 - as.numeric(loc),
+         #--------------groups---------------#
+         group = ifelse(loc %in% c(11:12, 5:6), 'life_span',
+                        ifelse(loc %in% c(9:10, 3:4), 'life_history','crop'))) %>% 
+  left_join(new_loc, by = 'loc') %>% 
+  ggplot() + aes(x = value, y = new_loc, fill = group) + 
+  scale_fill_manual(values = cols) +
+  labs(x = expression('Effect size (ln'~italic('RR')~')'), y = '') + 
+  scale_y_continuous(breaks = c(1,2, 4,5, 7,8, 11, 12, 14, 15, 17, 18), 
+                     labels = rep(c('crop', 'wild', 'wood', 'herb', 'long-lived', 'short-lived'), 2)) +
+  #---- plot----#
+  stat_halfeyeh(.width = 0.95, size = 1) +
+  geom_vline(xintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) + 
+  theme + theme(legend.position = "none") +
+  theme(plot.margin = margin(t = 0.5, r = 6, b = 0.5, l = 0.5, unit = "cm")) +
+  geom_text(size = 2.3, data = table_trait, hjust = 0,
+            aes(x = 0.5, y = c(1,2, 4,5, 7,8, 11,12, 14, 15, 17, 18)[12:1] + 0.2, 
+                label = paste('      ',info_sum), fill = NA)) + 
+  coord_cartesian(clip = "off")
+
+# add braces
+p4 <- p4 + bracketsGrob(0.65, 0.05, 0.65, 0.4, h= -0.07, lwd=1, col="black") %>% annotation_custom +
+  bracketsGrob(0.65, 0.55, 0.65, 0.9, h= -0.07, lwd=1, col="black") %>% annotation_custom + 
+  annotate(geom="text", x= 0.17, y=4.7,  label="Test species",        hjust = 0, size = 2.5) +
+  annotate(geom="text", x= 0.17, y=14.9, label="Allelopahty species", hjust = 0, size = 2.5) +
+  annotate(geom="text", x= 0.315, y=19.5, label="                       mean    95%CI      # obs (paper)", hjust = 0, size = 2.5)
+p4
+```
+
+
+```{r}
+ggsave('./fig/trait.pdf', p4, height = 10/2.54, width = 17/2.54)
+```
+
+
+## evolutionary history
+
+```{r}
+### pd
+median <- median(dat$pd)/max(dat$pd)
+
+p_pd <- dat %>% 
+  data_grid(duration_scale = 0,
+            method = 'leachate', trait_scale = 0, 
+            lifespan_allelo_scale = 0, lifeform_allelo_scale = 0, crop_allelo_scale =0,
+            lifespan_test_scale = 0, lifeform_test_scale = 0, crop_test_scale =0,
+            exp_envi = 'Controlled',
+            allelo_origin_3level = 'native', test_origin_3level = 'native', se = median(se),
+            pd_scale = seq_range(pd_scale, 100)
+  ) %>% 
+  add_fitted_draws(m_total, re_formula = NA) %>% 
+  median_hdci(.width = 0.95) %>% 
+  ggplot(aes(x = pd_scale, y = .value)) + 
+  geom_point(data = dat, aes(x = pd_scale, y = eff_size), pch = 21, color = rgb(0.85,0.85,0.85, 0.7), size = 0.7) +
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), fill = rgb(0.5, 0.5, 0.5, 0.7)) + geom_line() +
+  labs(x = '\nPhylogenetic distance [MYs]', y = expression('Effect size (ln'~italic('RR')~')')) +
+  theme + scale_x_continuous(breaks = 0:5*(1/max(dat$pd)*750/5) - median, label = seq(0, 750, 150)) +
+  theme(plot.margin = margin(t = 0.5, r = 2, b = 0.5, l = 0.5, unit = "cm"))
+p_pd
+```
+
+
+```{r}
+#origin
+cols <- brewer.pal(8,'Paired')[c(7,2,1)]
+list <- outer(c('native on ', 'naturalized on ', 'non_naturalized on '), 
+              c('native',     'naturalized',     'non_naturalized' ), paste, sep = '') %>% t() %>% as.vector()
+
+dat_leach$origin_comb_mult <- factor(dat_leach$origin_comb_mult, levels = list)
+labels <- outer(c( 'Non-naturalized on ', 'Naturalized on ', 'Native on '), 
+              c( 'non-naturalized', 'naturalized','native'), paste, sep = '') %>% t() %>% as.vector()
+
+
+table_origin <- obs_paper_num(dat_leach, list = 'origin_comb_mult', hypo_origin$hypothesis)
+
+p_origin <- (hypo_origin$samples) %>% 
+  rownames_to_column('c') %>% 
+  pivot_longer(-c, names_to = "hypo", values_to = "value") %>%
+  mutate(loc = str_remove(hypo, 'H'),
+         #--------------groups---------------#
+         group = ifelse(loc %in% c(1:3), 'native',
+                        ifelse(loc %in% c(4:6), 'naturalized','non-naturalized')),
+         loc = 10 - as.numeric(loc)) %>% 
+  mutate(loc = ifelse(loc %in% 1:3, loc,
+                      ifelse(loc %in% 4:6, loc + 1, loc +2))) %>% 
+  ggplot() + aes(x = value, y = loc, fill = group) + 
+  scale_fill_manual(values = cols) +
+  labs(x = expression('Effect size (ln'~italic('RR')~')'), y = '') + 
+  scale_y_continuous(breaks = c(1:3, 5:7, 9:11),
+                     labels = labels) +
+  scale_x_continuous(limits = c(-1.5,0.8)) +
+  #---- plot----#
+  stat_halfeyeh(.width = 0.95, size = 1) +
+  geom_vline(xintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) + 
+  theme + theme(legend.position = "none") +
+  theme(plot.margin = margin(t = 0.5, r = 4, b = 0.5, l = 0.5, unit = "cm")) +
+  geom_text(size = 2.3, data = table_origin, hjust = 0,
+            aes(x = 0.8, y = c(1:3, 5:7, 9:11)[9:1] + 0.2,
+                label = paste('      ',info_sum), fill = NA)) +
+  coord_cartesian(clip = "off") + 
+  annotate(geom="text", x= 0.45, y=12, label="                      mean      95%CI       # obs (paper)", hjust = 0, size = 2.5)+
+  #-----------significance level ------#
+  bracketsGrob(0.11, 12.3/14,  0.11, 7.6/14, h= -0.01, lwd=1, col="black", type = 4, ticks = NA) %>% annotation_custom +
+  annotate(geom="text", x= -1.44, y= 9, label="*", size = 5)
+p_origin
+
+```
+
+
+```{r}
+ggsave('./fig/origin.pdf', height = 17/2.54, width = 17/2.54,
+       grid.arrange(p_pd + labs(tag = 'a') + theme(plot.margin = margin(t = 0.5, r = 2, b = 0.5, l = 0.5, unit = "cm")), 
+                    p_origin + labs(tag = 'b'), 
+                    layout_matrix = matrix(c(NA, 1, 1, 1, NA,
+                                             NA, 1, 1, 1, NA,
+                                             2,  2, 2, 2, 2,
+                                             2,  2, 2, 2, 2,
+                                             2,  2, 2, 2, 2), nrow = 5, ncol = 5,byrow = T)),
+       useDingbats=FALSE)
+```
+
+## publication bias
+remove 22 data points with high precisions
+```{r}
+col = '#FFC34D'
+p_pub <- dat %>% 
+  ggplot(aes(x = meta_resid, y = 1/se)) + 
+  scale_x_continuous(limits = c(-7, 7), breaks = 2*(-3:3), labels = 2*(-3:3)) + 
+  labs(y = 'Precision', x = '\nMeta-analytic residuals', tag = 'a') +
+  geom_point(pch = 21, colour = rgb(0.45, 0.45, 0.45, 0.7), size = 0.7) + 
+  geom_segment(aes(x = 0, y = 0, xend = 0, yend = 4500), colour = 'black', size = 0.5, linetype = 'dashed') + # x = 0
+  theme
+p_pub
+```
+
+all data
+```{r}
+p_pub_all <- dat %>% 
+  ggplot(aes(x = meta_resid, y = 1/se)) + 
+  scale_y_continuous(limits = c(0, 4500)) +
+  scale_x_continuous(limits = c(-7, 7), breaks = 2*(-3:3), labels = 2*(-3:3)) + 
+  labs(y = 'Precision', x = '\nMeta-analytic residuals', tag = 'a') +
+  geom_point(pch = 21, colour = rgb(0.45, 0.45, 0.45, 0.7), size = 0.7) + 
+  geom_segment(aes(x = 0, y = 0, xend = 0, yend = 4500), colour = 'black', size = 0.5, linetype = 'dashed') + # x = 0
+  theme
+```
+
+
+```{r}
+p_year <- dat %>% 
+  #filter(year > 1980) %>% 
+  data_grid(year = seq_range(year, 100), se = median(se) ) %>% 
+  add_fitted_draws(m_year, re_formula = NA) %>% 
+  median_hdci(.width = 0.95) %>% 
+  ggplot(aes(x = year, y = .value)) + 
+  geom_point(data = dat, aes(x = year, y = eff_size), pch = 21, color = rgb(0.85,0.85,0.85, 0.7), size = 0.7) +
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = rgb(0.5, 0.5, 0.5)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper), fill = rgb(0.5, 0.5, 0.5, 0.7)) + 
+  geom_line(linetype = 'dotted') +
+  labs(x = '\nYear', y = expression('Effect size (ln'~italic('RR')~')'~'\n'), tag = 'b') +
+  theme
+p_year
+
+ggsave('./fig/pub_bias.pdf', height = 15/2.54, width = 8.2/2.54,
+       grid.arrange(p_pub, p_year, nrow = 2))
+
+ggsave('./fig/pub_bias_sup.pdf', height = 17/2.54/2, width = 10/2.54,
+      p_pub_all)
+
+
+```
+
+# tables
+
+```{r}
+
+m_total_eco_use %>% Ftable(reorder = T, order = c(1:10, 17:18, 11:16, 19:24, 26, 25, 27)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/0_total_sup.png')
+
+m_leach   %>% Ftable(reorder = T, order = c(1:2, 9:10, 12:16, 3:8, 11, 17:21,23,22,24)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/1_leach.png')
+m_residue %>% Ftable(reorder = T, order = c(1:2,17, 9:10, 12:16, 18:19, 3:8, 11, 20:22)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/2_residue.png')
+m_exudate %>% Ftable(reorder = T, order = c(1:2, 9:10,  3:8, 11:14)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/3_exudate.png')
+m_VOC     %>% Ftable(reorder = T, order = c(1:2, 9:10,  3:8, 11:14)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/4_voc.png')
+m_soil    %>% Ftable(reorder = T, order = c(1:2, 8:9,  3:7, 10:13)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/5_soil.png')
+m_AC      %>% Ftable(reorder = T, order = c(1:2,12, 9:10,  3:8, 11,13:15)) %>% 
+  kable_styling(full_width = F) %>% save_kable('table/6_AC.png')
+m_organic %>% Ftable(reorder = T, order = c(1:2, 6:7, 15:16,  9:14, 3:5, 8, 17:19)) %>% 
+  kable_styling(full_width = F) %>% save_kable('./table/7_organic.png')
+
+I_square %>% kable_styling(full_width = F) %>% save_kable('table/hetero.png')
+```
+
+
+

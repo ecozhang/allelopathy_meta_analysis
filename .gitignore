@@ -1,0 +1,6 @@
+*.Rhistory
+*.csv
+**/
+*.pdf
+*.RData
+*.tre
